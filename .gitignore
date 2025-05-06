@@ -1,0 +1,60 @@
+
+# Compiled files
+*.o
+*.ko
+*.mod.c
+*.symvers
+*.cmd
+*.d
+*.tmp_versions
+*.order
+
+# Build artifacts
+obj/
+build/
+dist/
+modules.order
+Module.symvers
+
+# Configuration files (if generated)
+.config
+include/config/
+include/generated/
+include/asm-generic/
+include/linux/
+
+# Device tree blobs
+*.dtb
+*.dtbo
+
+# Editor/IDE files
+*.swp
+*~
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Debug/profiling files
+profile/
+gcov/
+*.gcno
+*.gcda
+
+# Temporary files
+tmp/
+temp/
+*.bak
+*.orig
+
+# Documentation builds
+doc/_build/
+doc/*.pdf
+doc/*.html
+
+# Specific to your project (based on file names)
+*ac_power_prop_writeable*
+*adc_rate*
+*battery_prop_writeable*
+*trigger_handler*
+*reg_disable*
