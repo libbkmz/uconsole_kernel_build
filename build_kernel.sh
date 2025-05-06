@@ -54,9 +54,9 @@ CONFIG_OPTIONS=(
     "CONFIG_MFD_AXP20X=y"
     "CONFIG_MFD_AXP20X_I2C=y"
     "CONFIG_REGULATOR_AXP20X=y"
-    "CONFIG_DRM_PANEL_CWD686=m"
-    "CONFIG_DRM_PANEL_CWU50=m"
-    "CONFIG_BACKLIGHT_OCP8178=m"
+#    "CONFIG_DRM_PANEL_CWD686=m"
+#    "CONFIG_DRM_PANEL_CWU50=m"
+#    "CONFIG_BACKLIGHT_OCP8178=m"
     "CONFIG_AXP20X_ADC=m"
     "CONFIG_TI_ADC081C=m"
     "CONFIG_CRYPTO_LIB_ARC4=y"
@@ -81,7 +81,7 @@ if [ "$REGEN_ONLY" -eq 1 ]; then
     make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" bcm2712_defconfig
     if [ "$ENABLE_LOCALMODCONFIG" -eq 1 ]; then
         echo "Running localmodconfig..."
-        make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" localmodconfig LSMOD=/home/bkmz/dev/uconsole/uconsole_patchset/lsmod_6.12.cm5
+        yes "" | make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" localmodconfig LSMOD=/home/bkmz/dev/uconsole/uconsole_patchset/lsmod_6.12.cm5
     fi
     sed -i "s/^CONFIG_LOCALVERSION=\"\(.*\)\"/CONFIG_LOCALVERSION=\"\1-${CUSTOM_SUFFIX}\"/" "$KERNEL_DIR/.config"
     echo "Config regeneration complete. Exiting."
