@@ -1,0 +1,23 @@
+# List your overlay targets
+dtbo-y += clockworkpi-uconsole-cm5-overlay.dtbo
+dtbo-y += clockworkpi-devterm-cm5-overlay.dtbo
+dtbo-y += clockworkpi-devterm-overlay.dtbo
+dtbo-y += clockworkpi-uconsole-overlay.dtbo
+
+# This ensures the targets are always built
+always-y := $(dtbo-y)
+
+# KDIR = /mnt/git_repos/rpi_linux
+
+ccflags-y := -I$(KDIR)/include -I$(KDIR)/arch/arm/boot/dts
+
+
+# Define DTC include paths
+DTC_FLAGS += -i $(KDIR)/include
+DTC_FLAGS += -i $(KDIR)/arch/arm/boot/dts/broadcom
+DTC_FLAGS += -i $(KDIR)/arch/arm64/boot/dts/broadcom
+
+# Rule for building dtbo from dts
+%.dtbo: %.dts
+	$(CPP) -E -P -x assembler-with-cpp -I $(KDIR)/include -I $(KDIR)/arch/arm/boot/dts -undef -D__DTS__ $< | \
+	$(KDIR)/scripts/dtc/dtc -@ -I dts -O dtb -o $@ -
