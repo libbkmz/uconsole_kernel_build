@@ -7,32 +7,32 @@ set -e
 
 # Variables
 
- KERNEL_DIR="/mnt/git_repos/rpi_linux"
- ARCH="arm64"
- CROSS_COMPILE="aarch64-linux-gnu-"
- CONFIG_FILE="${KERNEL_DIR}/arch/${ARCH}/configs/bcm2712_defconfig"
- JOBS=16
- SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
- TARGET_DIR="$(readlink -f "${SCRIPT_DIR}/../target")"
+KERNEL_DIR="/mnt/git_repos/rpi_linux"
+ARCH="arm64"
+CROSS_COMPILE="aarch64-linux-gnu-"
+CONFIG_FILE="${KERNEL_DIR}/arch/${ARCH}/configs/bcm2712_defconfig"
+JOBS=16
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+TARGET_DIR="$(readlink -f "${SCRIPT_DIR}/../target")"
 
- ARCHIVE_NAME="rpi_kernel_modules_$(date +%Y%m%d_%H%M%S).tar.gz"
+ARCHIVE_NAME="rpi_kernel_modules_$(date +%Y%m%d_%H%M%S).tar.gz"
 
 
- ENABLE_LOCALMODCONFIG=1
- ENABLE_FULL_BUILD=1
+ENABLE_LOCALMODCONFIG=1
+ENABLE_FULL_BUILD=1
 
 CUSTOM_SUFFIX="bkmz1"
 
- CONFIG_OPTIONS=(
-     "CONFIG_REGMAP_I2C=y"
-     "CONFIG_INPUT_AXP20X_PEK=y"
-     "CONFIG_CHARGER_AXP20X=m"
-     "CONFIG_BATTERY_AXP20X=m"
-     "CONFIG_AXP20X_POWER=m"
-     "CONFIG_TI_ADC081C=m"
-     "CONFIG_CRYPTO_LIB_ARC4=y"
-     "CONFIG_CRC_CCITT=y"
- )
+CONFIG_OPTIONS=(
+    "CONFIG_REGMAP_I2C=y"
+    "CONFIG_INPUT_AXP20X_PEK=y"
+    "CONFIG_CHARGER_AXP20X=m"
+    "CONFIG_BATTERY_AXP20X=m"
+    "CONFIG_AXP20X_POWER=m"
+    "CONFIG_TI_ADC081C=m"
+    "CONFIG_CRYPTO_LIB_ARC4=y"
+    "CONFIG_CRC_CCITT=y"
+)
 if [ ! -d "$KERNEL_DIR" ]; then
     echo "Error: Kernel directory not found at $KERNEL_DIR"
     exit 1
@@ -58,16 +58,12 @@ if [ ! -f "$KERNEL_DIR/.config" ]; then
 #fi
 
 
-
-
      sed -i "s/^CONFIG_LOCALVERSION=\"\(.*\)\"/CONFIG_LOCALVERSION=\"\1-${CUSTOM_SUFFIX}\"/" "$KERNEL_DIR/.config"
 #else
 #    echo ".config file exists, skipping bcm2712_defconfig and localmodconfig"
 fi
 
 #exit 0
-
-
 
 
 make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" modules
