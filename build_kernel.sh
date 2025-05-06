@@ -6,7 +6,6 @@ set -e
 # idk how it will work in that case...
 
 # Variables
-
 KERNEL_DIR="/mnt/git_repos/rpi_linux"
 ARCH="arm64"
 CROSS_COMPILE="aarch64-linux-gnu-"
@@ -14,14 +13,37 @@ CONFIG_FILE="${KERNEL_DIR}/arch/${ARCH}/configs/bcm2712_defconfig"
 JOBS=16
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 TARGET_DIR="$(readlink -f "${SCRIPT_DIR}/../target")"
-
 ARCHIVE_NAME="rpi_kernel_modules_$(date +%Y%m%d_%H%M%S).tar.gz"
-
-
 ENABLE_LOCALMODCONFIG=1
 ENABLE_FULL_BUILD=1
-
+REGEN_ONLY=0
 CUSTOM_SUFFIX="bkmz1"
+
+# Parse command line arguments
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --regen-config) REGEN_ONLY=1 ;;
+        --enable-localmodconfig) ENABLE_LOCALMODCONFIG=1 ;;
+        --disable-localmodconfig) ENABLE_LOCALMODCONFIG=0 ;;
+        --enable-fullbuild) ENABLE_FULL_BUILD=1 ;;
+        --disable-fullbuild) ENABLE_FULL_BUILD=0 ;;
+        -h|--help)
+            echo "Usage: $0 [options]"
+            echo "Options:"
+            echo "  --regen-config              Regenerate .config and exit"
+            echo "  --enable-localmodconfig     Use localmodconfig (default)"
+            echo "  --disable-localmodconfig    Skip localmodconfig"
+            echo "  --enable-fullbuild          Enable full kernel build (default)"
+            echo "  --disable-fullbuild         Skip full kernel build"
+            exit 0
+            ;;
+        *)
+            echo "Unknown parameter passed: $1"
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 CONFIG_OPTIONS=(
     "CONFIG_REGMAP_I2C=y"
@@ -33,6 +55,7 @@ CONFIG_OPTIONS=(
     "CONFIG_CRYPTO_LIB_ARC4=y"
     "CONFIG_CRC_CCITT=y"
 )
+
 if [ ! -d "$KERNEL_DIR" ]; then
     echo "Error: Kernel directory not found at $KERNEL_DIR"
     exit 1
@@ -45,7 +68,20 @@ for option in "${CONFIG_OPTIONS[@]}"; do
     fi
 done
 
+# Only handle config regeneration if requested
+if [ "$REGEN_ONLY" -eq 1 ]; then
+    echo "Regenerating .config file..."
+    make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" bcm2712_defconfig
+    if [ "$ENABLE_LOCALMODCONFIG" -eq 1 ]; then
+        echo "Running localmodconfig..."
+        make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" localmodconfig LSMOD=/home/bkmz/dev/uconsole/uconsole_patchset/lsmod_6.12.cm5
+    fi
+    sed -i "s/^CONFIG_LOCALVERSION=\"\(.*\)\"/CONFIG_LOCALVERSION=\"\1-${CUSTOM_SUFFIX}\"/" "$KERNEL_DIR/.config"
+    echo "Config regeneration complete. Exiting."
+    exit 0
+fi
 
+# Normal build process continues below
 if [ ! -f "$KERNEL_DIR/.config" ]; then
     echo ".config file not found, running bcm2712_defconfig and localmodconfig if enabled"
     make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" bcm2712_defconfig
@@ -53,29 +89,11 @@ if [ ! -f "$KERNEL_DIR/.config" ]; then
         make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" localmodconfig LSMOD=/home/bkmz/dev/uconsole/uconsole_patchset/lsmod_6.12.cm5
     fi
     sed -i "s/^CONFIG_LOCALVERSION=\"\(.*\)\"/CONFIG_LOCALVERSION=\"\1-${CUSTOM_SUFFIX}\"/" "$KERNEL_DIR/.config"
-#else
-#    echo ".config file exists, skipping bcm2712_defconfig and localmodconfig"
-#fi
-
-
-     sed -i "s/^CONFIG_LOCALVERSION=\"\(.*\)\"/CONFIG_LOCALVERSION=\"\1-${CUSTOM_SUFFIX}\"/" "$KERNEL_DIR/.config"
-#else
-#    echo ".config file exists, skipping bcm2712_defconfig and localmodconfig"
 fi
 
-#exit 0
-
+sed -i "s/^CONFIG_LOCALVERSION=\"\(.*\)\"/CONFIG_LOCALVERSION=\"\1-${CUSTOM_SUFFIX}\"/" "$KERNEL_DIR/.config"
 
 make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" modules
-
-
-# Optional full build
-if [ "$ENABLE_FULL_BUILD" -eq 1 ]; then
-    make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" Image.gz dtbs
-fi
-
-make -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE"
-
 
 # Optional full build
 if [ "$ENABLE_FULL_BUILD" -eq 1 ]; then
