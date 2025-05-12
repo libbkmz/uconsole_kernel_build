@@ -61,6 +61,20 @@ CONFIG_OPTIONS=(
     "CONFIG_TI_ADC081C=m"
     "CONFIG_CRYPTO_LIB_ARC4=y"
     "CONFIG_CRC_CCITT=y"
+
+    # for more diagnostic things in case of trouble
+    "CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE=0x1"
+
+    "CONFIG_LOCALVERSION_AUTO=y"
+
+    "CONFIG_DRM_CLIENT_LOG=y"
+    "CONFIG_PANIC_TIMEOUT=10"
+    "CONFIG_LOCKUP_DETECTOR=y"
+    "CONFIG_SOFTLOCKUP_DETECTOR=y"
+    "CONFIG_HARDLOCKUP_DETECTOR=y"
+    "CONFIG_HARDLOCKUP_DETECTOR_BUDDY=y"
+    "CONFIG_HARDLOCKUP_DETECTOR_COUNTS_HRTIMER=y"
+    "CONFIG_WQ_WATCHDOG=y"
 )
 
 if [ ! -d "$KERNEL_DIR" ]; then
@@ -68,22 +82,76 @@ if [ ! -d "$KERNEL_DIR" ]; then
     exit 1
 fi
 
-for option in "${CONFIG_OPTIONS[@]}"; do
-    option_name=$(echo "$option" | cut -d'=' -f1)
-    if ! grep -q "^${option_name}=" "$CONFIG_FILE"; then
-        echo "$option" >> "$CONFIG_FILE"
+# Define config manipulation function
+apply_config_options() {
+    local config_path="$1"
+    local config_tool="${KERNEL_DIR}/scripts/config"
+
+    if [ ! -f "$config_tool" ]; then
+        echo "Error: Kernel config tool not found at $config_tool"
+        exit 1
     fi
-done
+    if [ ! -f "$config_path" ]; then
+        echo "Error: .config file not found at $config_path"
+        exit 1
+    fi
+
+    echo "Applying custom configuration options to $config_path..."
+    for option in "${CONFIG_OPTIONS[@]}"; do
+        option_name=$(echo "$option" | cut -d'=' -f1)
+        option_value=$(echo "$option" | cut -d'=' -f2)
+        echo "Setting $option_name=$option_value"
+        case $option_value in
+            y) "$config_tool" --file "$config_path" --enable "$option_name" ;;
+            m) "$config_tool" --file "$config_path" --module "$option_name" ;;
+            # Add cases for string or int if needed, e.g.:
+            # \"*) "$config_tool" --file "$config_path" --set-str "$option_name" "$(echo $option_value | sed 's/"//g')" ;;
+            [0-9x]*) "$config_tool" --file "$config_path" --set-val "$option_name" "$option_value" ;;
+            n) "$config_tool" --file "$config_path" --disable "$option_name" ;;
+            *) echo "Warning: Unsupported option value type for $option_name: $option_value" ;;
+        esac
+    done
+
+    # Handle LOCALVERSION
+    local current_localversion=""
+    if grep -q "^CONFIG_LOCALVERSION=" "$config_path"; then
+        current_localversion=$(grep "^CONFIG_LOCALVERSION=" "$config_path" | cut -d'"' -f2)
+    fi
+
+    local new_localversion="${current_localversion}"
+    # Check if the custom suffix pattern (e.g., -bkmz1) is already at the end
+    if ! echo "${current_localversion}" | grep -q -- "-${CUSTOM_SUFFIX}$"; then
+        # Append the custom suffix if it's not already there
+        new_localversion="${current_localversion}-${CUSTOM_SUFFIX}"
+    fi
+
+    # Set the potentially updated LOCALVERSION
+    if [ "${new_localversion}" != "${current_localversion}" ]; then
+        echo "Updating CONFIG_LOCALVERSION to \"${new_localversion}\""
+        "$config_tool" --file "$config_path" --set-str CONFIG_LOCALVERSION "${new_localversion}"
+    else
+        echo "CONFIG_LOCALVERSION already set to \"${current_localversion}\""
+    fi
+
+    # Clean up dependencies
+    echo "Running olddefconfig to finalize configuration..."
+    make -C "$KERNEL_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig KCONFIG_CONFIG="$config_path"
+}
+
 
 # Only handle config regeneration if requested
 if [ "$REGEN_ONLY" -eq 1 ]; then
     echo "Regenerating .config file..."
     make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" bcm2712_defconfig
+
+    # Apply custom options and update LOCALVERSION using the function
+    apply_config_options "$KERNEL_DIR/.config"
+
     if [ "$ENABLE_LOCALMODCONFIG" -eq 1 ]; then
         echo "Running localmodconfig..."
         yes "" | make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" localmodconfig LSMOD=/home/bkmz/dev/uconsole/uconsole_patchset/lsmod_6.12.cm5
     fi
-    sed -i "s/^CONFIG_LOCALVERSION=\"\(.*\)\"/CONFIG_LOCALVERSION=\"\1-${CUSTOM_SUFFIX}\"/" "$KERNEL_DIR/.config"
+
     echo "Config regeneration complete. Exiting."
     exit 0
 fi
@@ -92,13 +160,19 @@ fi
 if [ ! -f "$KERNEL_DIR/.config" ]; then
     echo ".config file not found, running bcm2712_defconfig and localmodconfig if enabled"
     make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" bcm2712_defconfig
+
+    # Apply custom options and update LOCALVERSION using the function
+    apply_config_options "$KERNEL_DIR/.config"
+
     if [ "$ENABLE_LOCALMODCONFIG" -eq 1 ]; then
         make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" localmodconfig LSMOD=/home/bkmz/dev/uconsole/uconsole_patchset/lsmod_6.12.cm5
     fi
-    sed -i "s/^CONFIG_LOCALVERSION=\"\(.*\)\"/CONFIG_LOCALVERSION=\"\1-${CUSTOM_SUFFIX}\"/" "$KERNEL_DIR/.config"
+
 fi
 
-sed -i "s/^CONFIG_LOCALVERSION=\"\(.*\)\"/CONFIG_LOCALVERSION=\"\1-${CUSTOM_SUFFIX}\"/" "$KERNEL_DIR/.config"
+# Ensure config options are applied even if .config existed
+# This also handles LOCALVERSION update correctly
+apply_config_options "$KERNEL_DIR/.config"
 
 make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" modules
 
@@ -150,8 +224,9 @@ fi
 
 # Pack target directory into tar.gz archive
 echo "Creating archive of target directory..."
-cd "$(dirname "$TARGET_DIR")"
+pushd "$(dirname "$TARGET_DIR")" > /dev/null
 tar czf "$ARCHIVE_NAME" "$(basename "$TARGET_DIR")"
+popd > /dev/null
 
 echo "Build completed successfully!"
 echo "Created archive: $ARCHIVE_NAME"
