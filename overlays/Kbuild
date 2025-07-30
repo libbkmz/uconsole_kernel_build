@@ -1,8 +1,30 @@
 # List your overlay targets
+
+# CM5 overlays (original)
 dtbo-y += clockworkpi-uconsole-cm5-overlay.dtbo
 dtbo-y += clockworkpi-devterm-cm5-overlay.dtbo
 dtbo-y += clockworkpi-devterm-overlay.dtbo
 dtbo-y += clockworkpi-uconsole-overlay.dtbo
+
+# CM4 uConsole overlays (from ClockworkPi patch)
+ifeq ($(PLATFORM),cm4)
+dtbo-y += devterm-pmu-overlay.dtbo
+dtbo-y += devterm-panel-uc-overlay.dtbo
+dtbo-y += devterm-misc-overlay.dtbo
+dtbo-y += devterm-panel-overlay.dtbo
+dtbo-y += devterm-bt-overlay.dtbo
+dtbo-y += devterm-wifi-overlay.dtbo
+endif
+
+# Build all CM4 overlays when no platform specified (for compatibility)
+ifndef PLATFORM
+dtbo-y += devterm-pmu-overlay.dtbo
+dtbo-y += devterm-panel-uc-overlay.dtbo
+dtbo-y += devterm-misc-overlay.dtbo
+dtbo-y += devterm-panel-overlay.dtbo
+dtbo-y += devterm-bt-overlay.dtbo
+dtbo-y += devterm-wifi-overlay.dtbo
+endif
 
 # This ensures the targets are always built
 always-y := $(dtbo-y)
