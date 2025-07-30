@@ -1,20 +1,47 @@
 
-# Compiled files
-*.o
+# =============================================================================
+# uConsole Kernel Module Build Artifacts
+# =============================================================================
+
+# Downloaded kernel sources (managed by build script)
+kernels/
+
+# Build output directories
+target/
+obj/
+build/
+dist/
+
+# Archive files
+*.tar.gz
+*.tar.bz2
+*.zip
+
+# =============================================================================
+# Kernel Module Build Artifacts
+# =============================================================================
+
+# Compiled kernel modules
 *.ko
+
+# Module build artifacts
+*.mod
 *.mod.c
+*.mod.o
 *.symvers
+modules.order
+Module.symvers
+
+# Object files and compilation artifacts
+*.o
 *.cmd
 *.d
 *.tmp_versions
 *.order
 
-# Build artifacts
-obj/
-build/
-dist/
-modules.order
-Module.symvers
+# =============================================================================
+# Kernel Configuration and Build Files
+# =============================================================================
 
 # Configuration files (if generated)
 .config
@@ -23,9 +50,13 @@ include/generated/
 include/asm-generic/
 include/linux/
 
-# Device tree blobs
+# Device tree blobs (generated)
 *.dtb
 *.dtbo
+
+# =============================================================================
+# Development and Editor Files
+# =============================================================================
 
 # Editor/IDE files
 *.swp
@@ -35,11 +66,19 @@ Thumbs.db
 .vscode/
 .idea/
 
+# =============================================================================
+# Debug and Testing Files
+# =============================================================================
+
 # Debug/profiling files
 profile/
 gcov/
 *.gcno
 *.gcda
+
+# =============================================================================
+# Temporary and Backup Files
+# =============================================================================
 
 # Temporary files
 tmp/
@@ -51,6 +90,10 @@ temp/
 doc/_build/
 doc/*.pdf
 doc/*.html
+
+# =============================================================================
+# Project-specific Build Artifacts
+# =============================================================================
 
 # Specific to your project (based on file names)
 *ac_power_prop_writeable*

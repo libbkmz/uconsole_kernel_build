@@ -1,7 +1,7 @@
-# KDIR ?= /lib/modules/$(shell uname -r)/build
-# KDIR ?= /lib/modules/6.6.62+rpt-rpi-v8/build
-# KDIR ?= /home/bkmz/dev/uconsole/linux
-KDIR ?= /mnt/git_repos/rpi_linux
+# KDIR must be set by build_kernel.sh script
+ifndef KDIR
+$(error KDIR is not set. Use build_kernel.sh script to build.)
+endif
 
 # DTC ?= $(KDIR)/scripts/dtc/dtc
 
