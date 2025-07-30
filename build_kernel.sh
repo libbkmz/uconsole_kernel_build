@@ -1,92 +1,146 @@
 #!/bin/bash
 set -e
 
-# this script is made for cross compilation
-# I didn't test it on real RPi hardware without cross-compiler
-# idk how it will work in that case...
+# =============================================================================
+# uConsole Kernel Build Configuration
+# =============================================================================
 
-# Variables
-KERNEL_DIR="/mnt/git_repos/rpi_linux"
-ARCH="arm64"
-CROSS_COMPILE="aarch64-linux-gnu-"
-CONFIG_FILE="${KERNEL_DIR}/arch/${ARCH}/configs/bcm2712_defconfig"
+# Kernel source configuration
+KERNEL_REPO="https://github.com/raspberrypi/linux.git"
+KERNEL_VERSION=""                    # Auto-detect or specify (e.g., "6.6.62", "6.8.12")
+KERNEL_BRANCH="rpi-6.12.y"          # Default branch if no version specified
+KERNEL_BASE_DIR="kernels"           # Base directory for downloaded kernels
+KERNEL_DIR=""                       # Will be set based on version/branch
+
+# Platform configuration
+PLATFORM="cm5"                      # cm4 or cm5
+ARCH="arm64"                        # arm64 for CM4/5, arm for older
+CROSS_COMPILE="aarch64-linux-gnu-"  # Cross compiler prefix
+
+# Build configuration
 JOBS=16
+ENABLE_LOCALMODCONFIG=1          # Use localmodconfig to minimize kernel config based on loaded modules
+ENABLE_FULL_BUILD=1              # Build full kernel (Image.gz + dtbs). If disabled, only builds external modules
+REGEN_ONLY=0                     # Only regenerate .config file and exit (no actual kernel/module build)
+CUSTOM_SUFFIX="bkmz1"            # Custom suffix appended to kernel version string
+CONFIG_PROFILES=""               # Comma-separated list of config profiles to apply
+
+# Skip options
+SKIP_KERNEL_SETUP=0              # Skip kernel fetch/pull/clone operations
+SKIP_CONFIG_CHANGES=0            # Skip all kernel config changes (except suffix increment)
+SKIP_SUFFIX_INCREMENT=0          # Skip build suffix increment
+
+# Build flow combinations:
+# REGEN_ONLY=1: Generate/update .config → apply localmodconfig if enabled → EXIT (no build)
+# REGEN_ONLY=0 + ENABLE_FULL_BUILD=1: Full build (kernel modules + Image.gz + dtbs + external modules)  
+# REGEN_ONLY=0 + ENABLE_FULL_BUILD=0: Module-only build (kernel modules + external modules, no Image.gz/dtbs)
+
+# Paths
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-TARGET_DIR="$(readlink -f "${SCRIPT_DIR}/../target")"
-ARCHIVE_NAME="rpi_kernel_modules_$(date +%Y%m%d_%H%M%S).tar.gz"
-ENABLE_LOCALMODCONFIG=1
-ENABLE_FULL_BUILD=1
-REGEN_ONLY=0
-CUSTOM_SUFFIX="bkmz1"
+TARGET_DIR=""                           # Will be set based on platform: target/cm4 or target/cm5
+ARCHIVE_NAME=""                         # Will be set based on platform and timestamp
 
-# Parse command line arguments
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        --regen-config) REGEN_ONLY=1 ;;
-        --enable-localmodconfig) ENABLE_LOCALMODCONFIG=1 ;;
-        --disable-localmodconfig) ENABLE_LOCALMODCONFIG=0 ;;
-        --enable-fullbuild) ENABLE_FULL_BUILD=1 ;;
-        --disable-fullbuild) ENABLE_FULL_BUILD=0 ;;
-        -h|--help)
-            echo "Usage: $0 [options]"
-            echo "Options:"
-            echo "  --regen-config              Regenerate .config and exit"
-            echo "  --enable-localmodconfig     Use localmodconfig (default)"
-            echo "  --disable-localmodconfig    Skip localmodconfig"
-            echo "  --enable-fullbuild          Enable full kernel build (default)"
-            echo "  --disable-fullbuild         Skip full kernel build"
-            exit 0
-            ;;
-        *)
-            echo "Unknown parameter passed: $1"
-            exit 1
-            ;;
-    esac
-    shift
-done
-
-CONFIG_OPTIONS=(
-    "CONFIG_REGMAP_I2C=y"
-    "CONFIG_INPUT_AXP20X_PEK=y"
-    "CONFIG_CHARGER_AXP20X=m"
-    "CONFIG_BATTERY_AXP20X=m"
-    "CONFIG_AXP20X_POWER=m"
-    "CONFIG_MFD_AXP20X=y"
-    "CONFIG_MFD_AXP20X_I2C=y"
-    "CONFIG_REGULATOR_AXP20X=y"
-#    "CONFIG_DRM_PANEL_CWD686=m"
-#    "CONFIG_DRM_PANEL_CWU50=m"
-#    "CONFIG_BACKLIGHT_OCP8178=m"
-    "CONFIG_AXP20X_ADC=m"
-    "CONFIG_TI_ADC081C=m"
-    "CONFIG_CRYPTO_LIB_ARC4=y"
-    "CONFIG_CRC_CCITT=y"
-
-    # for more diagnostic things in case of trouble
-    "CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE=0x1"
-
-    "CONFIG_LOCALVERSION_AUTO=y"
-
-    "CONFIG_DRM_CLIENT_LOG=y"
-    "CONFIG_PANIC_TIMEOUT=10"
-    "CONFIG_LOCKUP_DETECTOR=y"
-    "CONFIG_SOFTLOCKUP_DETECTOR=y"
-    "CONFIG_HARDLOCKUP_DETECTOR=y"
-    "CONFIG_HARDLOCKUP_DETECTOR_BUDDY=y"
-    "CONFIG_HARDLOCKUP_DETECTOR_COUNTS_HRTIMER=y"
-    "CONFIG_WQ_WATCHDOG=y"
+# Platform-specific settings
+declare -A PLATFORM_CONFIGS=(
+    ["cm4"]="bcm2711_defconfig"
+    ["cm5"]="bcm2712_defconfig"
 )
 
-if [ ! -d "$KERNEL_DIR" ]; then
-    echo "Error: Kernel directory not found at $KERNEL_DIR"
-    exit 1
-fi
+declare -A PLATFORM_LSMOD=(
+    ["cm4"]="/home/bkmz/dev/uconsole/uconsole_patchset/lsmod_6.12.cm4"
+    ["cm5"]="/home/bkmz/dev/uconsole/uconsole_patchset/lsmod_6.12.cm5"
+)
 
-# Define config manipulation function
-apply_config_options() {
+# =============================================================================
+# Functions
+# =============================================================================
+
+setup_kernel_dir() {
+    if [ -n "$KERNEL_VERSION" ]; then
+        KERNEL_DIR="${SCRIPT_DIR}/${KERNEL_BASE_DIR}/rpi-${KERNEL_VERSION}"
+    else
+        KERNEL_DIR="${SCRIPT_DIR}/${KERNEL_BASE_DIR}/$(basename "$KERNEL_BRANCH")"
+    fi
+}
+
+setup_target_paths() {
+    # Set platform-specific target directory (same level as configs/ and kernels/)
+    TARGET_DIR="${SCRIPT_DIR}/target/${PLATFORM}"
+    
+    # Archive name will be set later after kernel version is determined
+}
+
+increment_build_suffix() {
+    local config_file="$1"
+    local base_suffix="${CUSTOM_SUFFIX%[0-9]*}"  # Extract base (e.g., "bkmz" from "bkmz1")
+    local current_number="${CUSTOM_SUFFIX##*[^0-9]}"  # Extract number (e.g., "1" from "bkmz1")
+    
+    # Default to 1 if no number found
+    if [[ ! "$current_number" =~ ^[0-9]+$ ]]; then
+        current_number=1
+        base_suffix="$CUSTOM_SUFFIX"
+    fi
+    
+    # Check if .config exists and has LOCALVERSION
+    if [ -f "$config_file" ]; then
+        local existing_localversion
+        if existing_localversion=$(grep '^CONFIG_LOCALVERSION=' "$config_file" 2>/dev/null | cut -d'"' -f2); then
+            # Extract build number from existing localversion (e.g., "2" from "-bkmz2")  
+            local existing_suffix_pattern="-${base_suffix}([0-9]+)"
+            if [[ "$existing_localversion" =~ $existing_suffix_pattern ]]; then
+                local existing_number="${BASH_REMATCH[1]}"
+                local new_number=$((existing_number + 1))
+                CUSTOM_SUFFIX="${base_suffix}${new_number}"
+                echo "Incrementing build suffix: ${base_suffix}${existing_number} → ${CUSTOM_SUFFIX}"
+                return
+            fi
+        fi
+    fi
+    
+    # If no existing config or no matching pattern, use current suffix
+    CUSTOM_SUFFIX="${base_suffix}${current_number}"
+    echo "Using build suffix: ${CUSTOM_SUFFIX}"
+}
+
+download_kernel() {
+    local target_dir="$1"
+    local branch_or_tag="$2"
+    
+    echo "Setting up kernel source in: $target_dir"
+    
+    if [ -d "$target_dir" ]; then
+        echo "Kernel directory exists, updating..."
+        cd "$target_dir"
+        git fetch origin
+        git checkout "$branch_or_tag"
+        git pull origin "$branch_or_tag" 2>/dev/null || git reset --hard "$branch_or_tag"
+    else
+        echo "Cloning kernel repository..."
+        mkdir -p "$(dirname "$target_dir")"
+        git clone --depth=1 --branch="$branch_or_tag" "$KERNEL_REPO" "$target_dir"
+    fi
+    
+    cd "$SCRIPT_DIR"
+}
+
+load_config_profile() {
+    local profile_name="$1"
+    local profile_path="${SCRIPT_DIR}/configs/${profile_name}.conf"
+    
+    if [ ! -f "$profile_path" ]; then
+        echo "Error: Config profile '$profile_name' not found at $profile_path"
+        return 1
+    fi
+    
+    # Read config options from file, skip comments and empty lines
+    grep -E '^CONFIG_' "$profile_path" | grep -v '^#'
+}
+
+apply_config_profiles() {
     local config_path="$1"
     local config_tool="${KERNEL_DIR}/scripts/config"
-
+    local all_options=()
+    
     if [ ! -f "$config_tool" ]; then
         echo "Error: Kernel config tool not found at $config_tool"
         exit 1
@@ -96,60 +150,253 @@ apply_config_options() {
         exit 1
     fi
 
-    echo "Applying custom configuration options to $config_path..."
-    for option in "${CONFIG_OPTIONS[@]}"; do
-        option_name=$(echo "$option" | cut -d'=' -f1)
-        option_value=$(echo "$option" | cut -d'=' -f2)
-        echo "Setting $option_name=$option_value"
-        case $option_value in
-            y) "$config_tool" --file "$config_path" --enable "$option_name" ;;
-            m) "$config_tool" --file "$config_path" --module "$option_name" ;;
-            # Add cases for string or int if needed, e.g.:
-            # \"*) "$config_tool" --file "$config_path" --set-str "$option_name" "$(echo $option_value | sed 's/"//g')" ;;
-            [0-9x]*) "$config_tool" --file "$config_path" --set-val "$option_name" "$option_value" ;;
-            n) "$config_tool" --file "$config_path" --disable "$option_name" ;;
-            *) echo "Warning: Unsupported option value type for $option_name: $option_value" ;;
-        esac
-    done
-
-    # Handle LOCALVERSION
-    local current_localversion=""
-    if grep -q "^CONFIG_LOCALVERSION=" "$config_path"; then
-        current_localversion=$(grep "^CONFIG_LOCALVERSION=" "$config_path" | cut -d'"' -f2)
+    # Apply configuration profiles only if not skipping config changes
+    if [ "$SKIP_CONFIG_CHANGES" -eq 0 ]; then
+        # Always apply base configuration first
+        echo "Applying base configuration..."
+        local base_options
+        base_options=$(load_config_profile "base")
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to load base configuration"
+            exit 1
+        fi
+        
+        # Add base options to array
+        while IFS= read -r option; do
+            [ -n "$option" ] && all_options+=("$option")
+        done <<< "$base_options"
+        
+        # Apply additional profiles if specified
+        if [ -n "$CONFIG_PROFILES" ]; then
+            echo "Applying additional config profiles: $CONFIG_PROFILES"
+            IFS=',' read -ra PROFILES <<< "$CONFIG_PROFILES"
+            for profile in "${PROFILES[@]}"; do
+                profile=$(echo "$profile" | xargs)  # trim whitespace
+                echo "Loading profile: $profile"
+                
+                local profile_options
+                profile_options=$(load_config_profile "$profile")
+                if [ $? -ne 0 ]; then
+                    echo "Error: Failed to load profile '$profile'"
+                    exit 1
+                fi
+                
+                # Add profile options to array
+                while IFS= read -r option; do
+                    [ -n "$option" ] && all_options+=("$option")
+                done <<< "$profile_options"
+            done
+        fi
+        
+        # Apply all collected options
+        echo "Applying $(( ${#all_options[@]} )) configuration options to $config_path..."
+        for option in "${all_options[@]}"; do
+            option_name=$(echo "$option" | cut -d'=' -f1)
+            option_value=$(echo "$option" | cut -d'=' -f2)
+            echo "Setting $option_name=$option_value"
+            case $option_value in
+                y) "$config_tool" --file "$config_path" --enable "$option_name" ;;
+                m) "$config_tool" --file "$config_path" --module "$option_name" ;;
+                [0-9x]*) "$config_tool" --file "$config_path" --set-val "$option_name" "$option_value" ;;
+                n) "$config_tool" --file "$config_path" --disable "$option_name" ;;
+                *) echo "Warning: Unsupported option value type for $option_name: $option_value" ;;
+            esac
+        done
     fi
 
-    local new_localversion="${current_localversion}"
-    # Check if the custom suffix pattern (e.g., -bkmz1) is already at the end
-    if ! echo "${current_localversion}" | grep -q -- "-${CUSTOM_SUFFIX}$"; then
-        # Append the custom suffix if it's not already there
-        new_localversion="${current_localversion}-${CUSTOM_SUFFIX}"
-    fi
+    # Handle LOCALVERSION (suffix increment) only if not skipped
+    if [ "$SKIP_SUFFIX_INCREMENT" -eq 0 ]; then
+        local current_localversion=""
+        if grep -q "^CONFIG_LOCALVERSION=" "$config_path"; then
+            current_localversion=$(grep "^CONFIG_LOCALVERSION=" "$config_path" | cut -d'"' -f2)
+        fi
 
-    # Set the potentially updated LOCALVERSION
-    if [ "${new_localversion}" != "${current_localversion}" ]; then
-        echo "Updating CONFIG_LOCALVERSION to \"${new_localversion}\""
-        "$config_tool" --file "$config_path" --set-str CONFIG_LOCALVERSION "${new_localversion}"
+        # Extract base suffix (e.g., "bkmz" from "bkmz2")
+        local base_suffix="${CUSTOM_SUFFIX%[0-9]*}"
+        
+        # Remove any existing custom suffix from current localversion
+        local cleaned_localversion="$current_localversion"
+        if [[ "$current_localversion" =~ -${base_suffix//./\\.}[0-9]+$ ]]; then
+            # Remove the existing custom suffix (e.g., remove "-bkmz1" from "-v8-16k-bkmz1")
+            cleaned_localversion="${current_localversion%-${base_suffix}[0-9]*}"
+        fi
+        
+        # Apply the new incremented suffix
+        local new_localversion="${cleaned_localversion}-${CUSTOM_SUFFIX}"
+
+        # Set the updated LOCALVERSION
+        if [ "${new_localversion}" != "${current_localversion}" ]; then
+            echo "Updating CONFIG_LOCALVERSION: \"${current_localversion}\" → \"${new_localversion}\""
+            "$config_tool" --file "$config_path" --set-str CONFIG_LOCALVERSION "${new_localversion}"
+        else
+            echo "CONFIG_LOCALVERSION already set to \"${current_localversion}\""
+        fi
     else
-        echo "CONFIG_LOCALVERSION already set to \"${current_localversion}\""
+        echo "Skipping build suffix increment in CONFIG_LOCALVERSION (--skip-suffix-increment)"
     fi
 
-    # Clean up dependencies
-    echo "Running olddefconfig to finalize configuration..."
-    make -C "$KERNEL_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig KCONFIG_CONFIG="$config_path"
+    # Clean up dependencies only if config changes were made
+    if [ "$SKIP_CONFIG_CHANGES" -eq 0 ] || [ "$SKIP_SUFFIX_INCREMENT" -eq 0 ]; then
+        echo "Running olddefconfig to finalize configuration..."
+        make -C "$KERNEL_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig KCONFIG_CONFIG="$config_path"
+    fi
 }
+
+show_help() {
+    cat << EOF
+Usage: $0 [options]
+
+Kernel source options:
+  --kernel-version VERSION    Specify kernel version (e.g., 6.6.62)
+  --kernel-branch BRANCH      Specify kernel branch (e.g., rpi-6.6.y)
+  --kernel-dir DIR            Use existing kernel directory
+
+Platform options:
+  --platform PLATFORM        Target platform: cm4 or cm5 (default: $PLATFORM)
+
+Build options:
+  --jobs N                    Number of parallel jobs (default: $JOBS)
+  --custom-suffix SUFFIX      Custom kernel version suffix (default: $CUSTOM_SUFFIX)
+  --config-profile PROFILES   Comma-separated config profiles (debug,minimal,performance,development,security)
+  --regen-config              Regenerate .config and exit
+  --enable-localmodconfig     Use localmodconfig (default)
+  --disable-localmodconfig    Skip localmodconfig
+  --enable-fullbuild          Enable full kernel build (default)
+  --disable-fullbuild         Skip full kernel build
+
+Skip options:
+  --skip-kernel-setup         Skip kernel fetch/pull/clone operations
+  --skip-config-changes       Skip all kernel config changes (except suffix increment)
+  --skip-suffix-increment     Skip build suffix increment
+
+Other options:
+  -h, --help                  Show this help message
+
+Examples:
+  $0 --kernel-version 6.6.62 --platform cm5
+  $0 --kernel-branch rpi-6.8.y --platform cm4 --jobs 8
+  $0 --kernel-dir /path/to/existing/kernel --platform cm5
+  $0 --platform cm5 --config-profile debug,development
+  $0 --platform cm4 --config-profile minimal,performance
+  $0 --platform cm5 --skip-kernel-setup --skip-config-changes
+  $0 --platform cm5 --skip-kernel-setup --skip-suffix-increment
+EOF
+}
+
+# Parse command line arguments
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --kernel-version) KERNEL_VERSION="$2"; shift ;;
+        --kernel-branch) KERNEL_BRANCH="$2"; shift ;;
+        --kernel-dir) KERNEL_DIR="$2"; shift ;;
+        --platform) PLATFORM="$2"; shift ;;
+        --jobs) JOBS="$2"; shift ;;
+        --custom-suffix) CUSTOM_SUFFIX="$2"; shift ;;
+        --config-profile) CONFIG_PROFILES="$2"; shift ;;
+        --regen-config) REGEN_ONLY=1 ;;
+        --enable-localmodconfig) ENABLE_LOCALMODCONFIG=1 ;;
+        --disable-localmodconfig) ENABLE_LOCALMODCONFIG=0 ;;
+        --enable-fullbuild) ENABLE_FULL_BUILD=1 ;;
+        --disable-fullbuild) ENABLE_FULL_BUILD=0 ;;
+        --skip-kernel-setup) SKIP_KERNEL_SETUP=1 ;;
+        --skip-config-changes) SKIP_CONFIG_CHANGES=1 ;;
+        --skip-suffix-increment) SKIP_SUFFIX_INCREMENT=1 ;;
+        -h|--help) show_help; exit 0 ;;
+        *)
+            echo "Unknown parameter: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+# =============================================================================
+# Setup and validation
+# =============================================================================
+
+# Validate platform
+if [[ ! "${PLATFORM_CONFIGS[$PLATFORM]+isset}" ]]; then
+    echo "Error: Unsupported platform '$PLATFORM'. Supported: ${!PLATFORM_CONFIGS[*]}"
+    exit 1
+fi
+
+# Setup platform-specific paths
+setup_target_paths
+
+# Setup kernel directory if not specified
+if [ -z "$KERNEL_DIR" ]; then
+    setup_kernel_dir
+fi
+
+# Set platform-specific config
+CONFIG_FILE="${KERNEL_DIR}/arch/${ARCH}/configs/${PLATFORM_CONFIGS[$PLATFORM]}"
+
+echo "Configuration:"
+echo "  Platform: $PLATFORM"
+echo "  Architecture: $ARCH"
+echo "  Kernel directory: $KERNEL_DIR"
+echo "  Cross compiler: $CROSS_COMPILE"
+echo "  Jobs: $JOBS"
+echo ""
+
+# Download/update kernel if needed
+if [ "$SKIP_KERNEL_SETUP" -eq 0 ]; then
+    if [ ! -d "$KERNEL_DIR" ] || [ -n "$KERNEL_VERSION" ] || [ -n "$KERNEL_BRANCH" ]; then
+        if [ -n "$KERNEL_VERSION" ]; then
+            echo "Using kernel version: $KERNEL_VERSION"
+            download_kernel "$KERNEL_DIR" "v$KERNEL_VERSION"
+        else
+            echo "Using kernel branch: $KERNEL_BRANCH"
+            download_kernel "$KERNEL_DIR" "$KERNEL_BRANCH"
+        fi
+    fi
+else
+    echo "Skipping kernel setup (--skip-kernel-setup)"
+fi
+
+# Validate kernel directory
+if [ ! -d "$KERNEL_DIR" ]; then
+    echo "Error: Kernel directory not found at $KERNEL_DIR"
+    exit 1
+fi
+
+# Increment build suffix based on existing config
+if [ "$SKIP_SUFFIX_INCREMENT" -eq 0 ]; then
+    increment_build_suffix "$KERNEL_DIR/.config"
+else
+    echo "Skipping build suffix increment (--skip-suffix-increment)"
+fi
+
+# =============================================================================
+# Build Process
+# =============================================================================
 
 
 # Only handle config regeneration if requested
 if [ "$REGEN_ONLY" -eq 1 ]; then
-    echo "Regenerating .config file..."
-    make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" bcm2712_defconfig
+    if [ "$SKIP_CONFIG_CHANGES" -eq 0 ]; then
+        echo "Regenerating .config file..."
+        make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" "${PLATFORM_CONFIGS[$PLATFORM]}"
 
-    # Apply custom options and update LOCALVERSION using the function
-    apply_config_options "$KERNEL_DIR/.config"
+        # Apply config profiles
+        apply_config_profiles "$KERNEL_DIR/.config"
 
-    if [ "$ENABLE_LOCALMODCONFIG" -eq 1 ]; then
-        echo "Running localmodconfig..."
-        yes "" | make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" localmodconfig LSMOD=/home/bkmz/dev/uconsole/uconsole_patchset/lsmod_6.12.cm5
+        if [ "$ENABLE_LOCALMODCONFIG" -eq 1 ]; then
+            echo "Running localmodconfig for platform $PLATFORM..."
+            if [ -f "${PLATFORM_LSMOD[$PLATFORM]}" ]; then
+                yes "" | make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" localmodconfig LSMOD="${PLATFORM_LSMOD[$PLATFORM]}"
+            else
+                echo "Warning: LSMOD file not found: ${PLATFORM_LSMOD[$PLATFORM]}"
+                echo "Skipping localmodconfig..."
+            fi
+        fi
+    else
+        echo "Skipping config changes (--skip-config-changes)"
+        # Still apply suffix increment if not disabled
+        if [ "$SKIP_SUFFIX_INCREMENT" -eq 0 ] && [ -f "$KERNEL_DIR/.config" ]; then
+            apply_config_profiles "$KERNEL_DIR/.config"
+        fi
     fi
 
     echo "Config regeneration complete. Exiting."
@@ -157,22 +404,33 @@ if [ "$REGEN_ONLY" -eq 1 ]; then
 fi
 
 # Normal build process continues below
-if [ ! -f "$KERNEL_DIR/.config" ]; then
-    echo ".config file not found, running bcm2712_defconfig and localmodconfig if enabled"
-    make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" bcm2712_defconfig
+if [ "$SKIP_CONFIG_CHANGES" -eq 0 ]; then
+    if [ ! -f "$KERNEL_DIR/.config" ]; then
+        echo ".config file not found, running ${PLATFORM_CONFIGS[$PLATFORM]} and localmodconfig if enabled"
+        make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" "${PLATFORM_CONFIGS[$PLATFORM]}"
 
-    # Apply custom options and update LOCALVERSION using the function
-    apply_config_options "$KERNEL_DIR/.config"
+        # Apply config profiles
+        apply_config_profiles "$KERNEL_DIR/.config"
 
-    if [ "$ENABLE_LOCALMODCONFIG" -eq 1 ]; then
-        make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" localmodconfig LSMOD=/home/bkmz/dev/uconsole/uconsole_patchset/lsmod_6.12.cm5
+        if [ "$ENABLE_LOCALMODCONFIG" -eq 1 ]; then
+            if [ -f "${PLATFORM_LSMOD[$PLATFORM]}" ]; then
+                make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" localmodconfig LSMOD="${PLATFORM_LSMOD[$PLATFORM]}"
+            else
+                echo "Warning: LSMOD file not found: ${PLATFORM_LSMOD[$PLATFORM]}"
+                echo "Skipping localmodconfig..."
+            fi
+        fi
     fi
 
+    # Ensure config profiles are applied even if .config existed
+    apply_config_profiles "$KERNEL_DIR/.config"
+else
+    echo "Skipping config changes (--skip-config-changes)"
+    # Still apply suffix increment if not disabled and config exists
+    if [ "$SKIP_SUFFIX_INCREMENT" -eq 0 ] && [ -f "$KERNEL_DIR/.config" ]; then
+        apply_config_profiles "$KERNEL_DIR/.config"
+    fi
 fi
-
-# Ensure config options are applied even if .config existed
-# This also handles LOCALVERSION update correctly
-apply_config_options "$KERNEL_DIR/.config"
 
 make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" modules
 
@@ -181,7 +439,7 @@ if [ "$ENABLE_FULL_BUILD" -eq 1 ]; then
     make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" Image.gz dtbs
 fi
 
-make -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE"
+make -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" PLATFORM="$PLATFORM" KDIR="$KERNEL_DIR"
 
 rm -rf "$TARGET_DIR"
 
@@ -189,15 +447,19 @@ mkdir -p "$TARGET_DIR"
 
 make -C "$KERNEL_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$TARGET_DIR" modules_install
 
-make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$TARGET_DIR" install
+make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$TARGET_DIR" PLATFORM="$PLATFORM" KDIR="$KERNEL_DIR" install
 
 echo "Copying kernel and device tree files..."
 mkdir -p "$TARGET_DIR/boot/"
 mkdir -p "$TARGET_DIR/boot/overlays"
 
 if [ -f "$KERNEL_DIR/arch/$ARCH/boot/Image.gz" ]; then
-    cp "$KERNEL_DIR/arch/$ARCH/boot/Image.gz" "$TARGET_DIR/boot/kernel_2712.img"
-    cp "$KERNEL_DIR/arch/$ARCH/boot/Image.gz" "$TARGET_DIR/boot/kernel.img"
+    if [ "$PLATFORM" = "cm5" ]; then
+        cp "$KERNEL_DIR/arch/$ARCH/boot/Image.gz" "$TARGET_DIR/boot/kernel_2712.img"
+    elif [ "$PLATFORM" = "cm4" ]; then
+        cp "$KERNEL_DIR/arch/$ARCH/boot/Image.gz" "$TARGET_DIR/boot/kernel8.img"
+    fi
+    
 else
     echo "Warning: Image.gz not found. You may need to enable ENABLE_FULL_BUILD."
 fi
@@ -212,10 +474,13 @@ if [ -d "$KERNEL_DIR/arch/$ARCH/boot/dts/overlays" ]; then
 fi
 
 # Get kernel version
-KERNEL_VERSION=$(make -s -C "$KERNEL_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)
+KERNEL_RELEASE=$(make -s -C "$KERNEL_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)
+
+# Set archive name now that we have the kernel version
+ARCHIVE_NAME="rpi_kernel_modules_${PLATFORM}_${KERNEL_RELEASE}_$(date +%Y%m%d_%H%M%S).tar.gz"
 
 # Install headers to version-specific directory
-make -C "$KERNEL_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" INSTALL_HDR_PATH="$TARGET_DIR/usr/lib/modules/$KERNEL_VERSION/build" headers_install
+make -C "$KERNEL_DIR" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" INSTALL_HDR_PATH="$TARGET_DIR/usr/lib/modules/$KERNEL_RELEASE/build" headers_install
 
 if [ -d "overlays" ] && [ -n "$(ls -A overlays/*.dtbo 2>/dev/null)" ]; then
     cp overlays/*.dtbo "$TARGET_DIR/boot/overlays/"
@@ -224,15 +489,20 @@ fi
 
 # Pack target directory into tar.gz archive
 echo "Creating archive of target directory..."
-pushd "$(dirname "$TARGET_DIR")" > /dev/null
-tar czf "$ARCHIVE_NAME" "$(basename "$TARGET_DIR")"
+pushd "$TARGET_DIR" > /dev/null
+tar czf "../$ARCHIVE_NAME" .
 popd > /dev/null
 
 echo "Build completed successfully!"
+echo "Platform: $PLATFORM"
+echo "Kernel version: $KERNEL_RELEASE"
+echo "Target directory: $TARGET_DIR"
 echo "Created archive: $ARCHIVE_NAME"
 
+echo ""
+echo "Installation commands:"
 echo "cd /"
 echo "tar xvf PATH/$ARCHIVE_NAME --strip-components=1 --keep-directory-symlink"
-echo "rsync -avHK --no-delete /path/to/target_dir/ pi@raspberry_pi_ip:/"
+echo "rsync -avHK --no-delete $TARGET_DIR/ pi@raspberry_pi_ip:/"
 
 exit 0
