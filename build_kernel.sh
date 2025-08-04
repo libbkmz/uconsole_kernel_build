@@ -37,6 +37,7 @@ SKIP_SUFFIX_INCREMENT=0          # Skip build suffix increment
 
 # Paths
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+BUILD_STATE_DIR="${SCRIPT_DIR}/.build_state"
 TARGET_DIR=""                           # Will be set based on platform: target/cm4 or target/cm5
 ARCHIVE_NAME=""                         # Will be set based on platform and timestamp
 
@@ -55,11 +56,113 @@ declare -A PLATFORM_LSMOD=(
 # Functions
 # =============================================================================
 
+setup_build_state_dir() {
+    mkdir -p "$BUILD_STATE_DIR"
+}
+
+get_platform_build_counter() {
+    local platform="$1"
+    local counter_file="${BUILD_STATE_DIR}/${platform}_build_counter"
+    
+    if [ -f "$counter_file" ]; then
+        cat "$counter_file"
+    else
+        echo "1"
+    fi
+}
+
+increment_platform_counter() {
+    local platform="$1"
+    local counter_file="${BUILD_STATE_DIR}/${platform}_build_counter"
+    local current_counter
+    
+    current_counter=$(get_platform_build_counter "$platform")
+    local new_counter=$((current_counter + 1))
+    echo "$new_counter" > "$counter_file"
+    echo "$new_counter"
+}
+
+get_platform_last_kernel() {
+    local platform="$1"
+    local last_kernel_file="${BUILD_STATE_DIR}/${platform}_last_kernel"
+    
+    if [ -f "$last_kernel_file" ]; then
+        cat "$last_kernel_file"
+    else
+        echo ""
+    fi
+}
+
+set_platform_last_kernel() {
+    local platform="$1"
+    local kernel_dir="$2"
+    local last_kernel_file="${BUILD_STATE_DIR}/${platform}_last_kernel"
+    echo "$kernel_dir" > "$last_kernel_file"
+}
+
+validate_kernel_tree_for_platform() {
+    local kernel_dir="$1"
+    local target_platform="$2"
+    
+    if [ ! -d "$kernel_dir" ]; then
+        return 0  # No kernel dir, nothing to validate
+    fi
+    
+    if [ ! -f "$kernel_dir/.config" ]; then
+        return 0  # No config file, tree is clean
+    fi
+    
+    # Check if .config matches target platform
+    local expected_defconfig="${PLATFORM_CONFIGS[$target_platform]}"
+    if ! grep -q "CONFIG_ARCH_BCM2835=y" "$kernel_dir/.config" 2>/dev/null; then
+        echo "Warning: Kernel tree may not be configured for Raspberry Pi platforms"
+        return 1
+    fi
+    
+    # Check for platform-specific markers
+    case "$target_platform" in
+        "cm4")
+            # CM4 should not have CM5-specific configs
+            if grep -q "CONFIG_ARCH_BCM2712=y" "$kernel_dir/.config" 2>/dev/null; then
+                echo "Warning: Kernel tree appears to be configured for CM5 (BCM2712) but targeting CM4 (BCM2711)"
+                return 1
+            fi
+            ;;
+        "cm5")
+            # CM5 should have BCM2712 support
+            if grep -q "CONFIG_ARCH_BCM2711=y" "$kernel_dir/.config" 2>/dev/null && \
+               ! grep -q "CONFIG_ARCH_BCM2712=y" "$kernel_dir/.config" 2>/dev/null; then
+                echo "Warning: Kernel tree appears to be configured for CM4 (BCM2711) but targeting CM5 (BCM2712)"
+                return 1
+            fi
+            ;;
+    esac
+    
+    return 0
+}
+
+clean_kernel_tree_if_needed() {
+    local kernel_dir="$1"
+    local target_platform="$2"
+    local force_clean="$3"
+    
+    if [ "$force_clean" = "true" ] || ! validate_kernel_tree_for_platform "$kernel_dir" "$target_platform"; then
+        if [ -f "$kernel_dir/.config" ]; then
+            echo "Cleaning kernel tree due to platform mismatch or force clean..."
+            make -C "$kernel_dir" mrproper >/dev/null 2>&1 || true
+            echo "Kernel tree cleaned successfully"
+            return 1  # Indicate that cleaning was performed
+        fi
+    fi
+    
+    return 0  # No cleaning needed
+}
+
 setup_kernel_dir() {
     if [ -n "$KERNEL_VERSION" ]; then
-        KERNEL_DIR="${SCRIPT_DIR}/${KERNEL_BASE_DIR}/rpi-${KERNEL_VERSION}"
+        KERNEL_DIR="${SCRIPT_DIR}/${KERNEL_BASE_DIR}/rpi-${KERNEL_VERSION}-${PLATFORM}"
     else
-        KERNEL_DIR="${SCRIPT_DIR}/${KERNEL_BASE_DIR}/$(basename "$KERNEL_BRANCH")"
+        KERNEL_DIR="${SCRIPT_DIR}/${KERNEL_BASE_DIR}/$(basename "$KERNEL_BRANCH")-${PLATFORM}"
     fi
 }
 
@@ -71,35 +174,45 @@ setup_target_paths() {
 }
 
 increment_build_suffix() {
-    local config_file="$1"
-    local base_suffix="${CUSTOM_SUFFIX%[0-9]*}"  # Extract base (e.g., "bkmz" from "bkmz1")
-    local current_number="${CUSTOM_SUFFIX##*[^0-9]}"  # Extract number (e.g., "1" from "bkmz1")
+    setup_build_state_dir
     
-    # Default to 1 if no number found
-    if [[ ! "$current_number" =~ ^[0-9]+$ ]]; then
-        current_number=1
-        base_suffix="$CUSTOM_SUFFIX"
-    fi
+    # Extract base suffix (remove any existing platform prefix and number)
+    local base_suffix="$CUSTOM_SUFFIX"
+    base_suffix="${base_suffix#*-}"  # Remove platform prefix if exists (e.g., "cm4-bkmz1" -> "bkmz1")
+    base_suffix="${base_suffix%[0-9]*}"  # Remove number suffix (e.g., "bkmz1" -> "bkmz")
     
-    # Check if .config exists and has LOCALVERSION
-    if [ -f "$config_file" ]; then
+    # Get current counter for this platform
+    local current_counter
+    current_counter=$(get_platform_build_counter "$PLATFORM")
+    
+    # Check if we need to increment (only if building, not if just checking)
+    local should_increment=true
+    local last_kernel_dir
+    last_kernel_dir=$(get_platform_last_kernel "$PLATFORM")
+    
+    if [ "$last_kernel_dir" = "$KERNEL_DIR" ] && [ -f "$KERNEL_DIR/.config" ]; then
+        # Same kernel directory, check if we need to increment
         local existing_localversion
-        if existing_localversion=$(grep '^CONFIG_LOCALVERSION=' "$config_file" 2>/dev/null | cut -d'"' -f2); then
-            # Extract build number from existing localversion (e.g., "2" from "-bkmz2")  
-            local existing_suffix_pattern="-${base_suffix}([0-9]+)"
-            if [[ "$existing_localversion" =~ $existing_suffix_pattern ]]; then
-                local existing_number="${BASH_REMATCH[1]}"
-                local new_number=$((existing_number + 1))
-                CUSTOM_SUFFIX="${base_suffix}${new_number}"
-                echo "Incrementing build suffix: ${base_suffix}${existing_number} → ${CUSTOM_SUFFIX}"
-                return
+        if existing_localversion=$(grep '^CONFIG_LOCALVERSION=' "$KERNEL_DIR/.config" 2>/dev/null | cut -d'"' -f2); then
+            local expected_suffix="${PLATFORM}-${base_suffix}-${current_counter}"
+            if [[ "$existing_localversion" == *"-${expected_suffix}" ]]; then
+                # Same version already exists, need to increment
+                current_counter=$(increment_platform_counter "$PLATFORM")
+                echo "Incrementing build counter for $PLATFORM: $((current_counter - 1)) → ${current_counter}"
             fi
         fi
+    else
+        # Different kernel directory or no existing config, increment counter
+        current_counter=$(increment_platform_counter "$PLATFORM")
+        echo "New build for $PLATFORM: using counter ${current_counter}"
     fi
     
-    # If no existing config or no matching pattern, use current suffix
-    CUSTOM_SUFFIX="${base_suffix}${current_number}"
+    # Set the final suffix in the format: platform-base-counter
+    CUSTOM_SUFFIX="${PLATFORM}-${base_suffix}-${current_counter}"
     echo "Using build suffix: ${CUSTOM_SUFFIX}"
+    
+    # Remember this kernel directory for this platform
+    set_platform_last_kernel "$PLATFORM" "$KERNEL_DIR"
 }
 
 download_kernel() {
@@ -211,17 +324,15 @@ apply_config_profiles() {
             current_localversion=$(grep "^CONFIG_LOCALVERSION=" "$config_path" | cut -d'"' -f2)
         fi
 
-        # Extract base suffix (e.g., "bkmz" from "bkmz2")
-        local base_suffix="${CUSTOM_SUFFIX%[0-9]*}"
-        
-        # Remove any existing custom suffix from current localversion
+        # Remove any existing platform-base-number suffix from current localversion
         local cleaned_localversion="$current_localversion"
-        if [[ "$current_localversion" =~ -${base_suffix//./\\.}[0-9]+$ ]]; then
-            # Remove the existing custom suffix (e.g., remove "-bkmz1" from "-v8-16k-bkmz1")
-            cleaned_localversion="${current_localversion%-${base_suffix}[0-9]*}"
+        # Pattern matches: -{platform}-{base}-{number} (e.g., "-cm4-bkmz-1", "-cm5-bkmz-3")
+        if [[ "$current_localversion" =~ -[^-]+-[^-]+-[0-9]+$ ]]; then
+            # Remove the existing platform suffix (e.g., remove "-cm4-bkmz-1" from "-v8-16k-cm4-bkmz-1")
+            cleaned_localversion=$(echo "$current_localversion" | sed 's/-[^-]*-[^-]*-[0-9]*$//')
         fi
         
-        # Apply the new incremented suffix
+        # Apply the new incremented suffix (CUSTOM_SUFFIX now contains platform-base-counter)
         local new_localversion="${cleaned_localversion}-${CUSTOM_SUFFIX}"
 
         # Set the updated LOCALVERSION
@@ -359,6 +470,12 @@ fi
 if [ ! -d "$KERNEL_DIR" ]; then
     echo "Error: Kernel directory not found at $KERNEL_DIR"
     exit 1
+fi
+
+# Validate and clean kernel tree if needed for platform switch
+echo "Validating kernel tree for platform $PLATFORM..."
+if ! clean_kernel_tree_if_needed "$KERNEL_DIR" "$PLATFORM" "false"; then
+    echo "Kernel tree validation and cleanup completed"
 fi
 
 # Increment build suffix based on existing config
