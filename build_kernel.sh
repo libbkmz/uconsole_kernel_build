@@ -19,7 +19,6 @@ CROSS_COMPILE="aarch64-linux-gnu-"  # Cross compiler prefix
 
 # Build configuration
 JOBS=16
-ENABLE_LOCALMODCONFIG=1          # Use localmodconfig to minimize kernel config based on loaded modules
 ENABLE_FULL_BUILD=1              # Build full kernel (Image.gz + dtbs). If disabled, only builds external modules
 REGEN_ONLY=0                     # Only regenerate .config file and exit (no actual kernel/module build)
 CUSTOM_SUFFIX="bkmz1"            # Custom suffix appended to kernel version string
@@ -29,10 +28,11 @@ CONFIG_PROFILES=""               # Comma-separated list of config profiles to ap
 SKIP_KERNEL_SETUP=0              # Skip kernel fetch/pull/clone operations
 SKIP_CONFIG_CHANGES=0            # Skip all kernel config changes (except suffix increment)
 SKIP_SUFFIX_INCREMENT=0          # Skip build suffix increment
+FORCE_CLEAN=0                    # Force .config regeneration from defconfig
 
 # Build flow combinations:
-# REGEN_ONLY=1: Generate/update .config → apply localmodconfig if enabled → EXIT (no build)
-# REGEN_ONLY=0 + ENABLE_FULL_BUILD=1: Full build (kernel modules + Image.gz + dtbs + external modules)  
+# REGEN_ONLY=1: Generate/update .config → apply profiles → olddefconfig → EXIT (no build)
+# REGEN_ONLY=0 + ENABLE_FULL_BUILD=1: Full build (kernel modules + Image.gz + dtbs + external modules)
 # REGEN_ONLY=0 + ENABLE_FULL_BUILD=0: Module-only build (kernel modules + external modules, no Image.gz/dtbs)
 
 # Paths
@@ -45,11 +45,6 @@ ARCHIVE_NAME=""                         # Will be set based on platform and time
 declare -A PLATFORM_CONFIGS=(
     ["cm4"]="bcm2711_defconfig"
     ["cm5"]="bcm2712_defconfig"
-)
-
-declare -A PLATFORM_LSMOD=(
-    ["cm4"]="/home/bkmz/dev/uconsole/uconsole_patchset/lsmod_6.12.cm4"
-    ["cm5"]="/home/bkmz/dev/uconsole/uconsole_patchset/lsmod_6.12.cm5"
 )
 
 # =============================================================================
@@ -253,7 +248,13 @@ apply_config_profiles() {
     local config_path="$1"
     local config_tool="${KERNEL_DIR}/scripts/config"
     local all_options=()
-    
+
+    # This function performs three main tasks:
+    # 1. Apply base configuration (mandatory for all builds)
+    # 2. Apply additional user-specified profiles (optional)
+    # 3. Update CONFIG_LOCALVERSION with build suffix (unless skipped)
+    # After all changes, runs olddefconfig to resolve dependencies
+
     if [ ! -f "$config_tool" ]; then
         echo "Error: Kernel config tool not found at $config_tool"
         exit 1
@@ -370,8 +371,7 @@ Build options:
   --custom-suffix SUFFIX      Custom kernel version suffix (default: $CUSTOM_SUFFIX)
   --config-profile PROFILES   Comma-separated config profiles (debug,minimal,performance,development,security)
   --regen-config              Regenerate .config and exit
-  --enable-localmodconfig     Use localmodconfig (default)
-  --disable-localmodconfig    Skip localmodconfig
+  --force-clean               Force .config regeneration from defconfig
   --enable-fullbuild          Enable full kernel build (default)
   --disable-fullbuild         Skip full kernel build
 
@@ -389,6 +389,7 @@ Examples:
   $0 --kernel-dir /path/to/existing/kernel --platform cm5
   $0 --platform cm5 --config-profile debug,development
   $0 --platform cm4 --config-profile minimal,performance
+  $0 --platform cm5 --force-clean
   $0 --platform cm5 --skip-kernel-setup --skip-config-changes
   $0 --platform cm5 --skip-kernel-setup --skip-suffix-increment
 EOF
@@ -405,8 +406,7 @@ while [[ "$#" -gt 0 ]]; do
         --custom-suffix) CUSTOM_SUFFIX="$2"; shift ;;
         --config-profile) CONFIG_PROFILES="$2"; shift ;;
         --regen-config) REGEN_ONLY=1 ;;
-        --enable-localmodconfig) ENABLE_LOCALMODCONFIG=1 ;;
-        --disable-localmodconfig) ENABLE_LOCALMODCONFIG=0 ;;
+        --force-clean) FORCE_CLEAN=1 ;;
         --enable-fullbuild) ENABLE_FULL_BUILD=1 ;;
         --disable-fullbuild) ENABLE_FULL_BUILD=0 ;;
         --skip-kernel-setup) SKIP_KERNEL_SETUP=1 ;;
@@ -474,7 +474,11 @@ fi
 
 # Validate and clean kernel tree if needed for platform switch
 echo "Validating kernel tree for platform $PLATFORM..."
-if ! clean_kernel_tree_if_needed "$KERNEL_DIR" "$PLATFORM" "false"; then
+force_clean_flag="false"
+if [ "$FORCE_CLEAN" -eq 1 ]; then
+    force_clean_flag="true"
+fi
+if ! clean_kernel_tree_if_needed "$KERNEL_DIR" "$PLATFORM" "$force_clean_flag"; then
     echo "Kernel tree validation and cleanup completed"
 fi
 
@@ -496,18 +500,8 @@ if [ "$REGEN_ONLY" -eq 1 ]; then
         echo "Regenerating .config file..."
         make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" "${PLATFORM_CONFIGS[$PLATFORM]}"
 
-        # Apply config profiles
+        # Apply config profiles (includes base config + custom profiles + olddefconfig)
         apply_config_profiles "$KERNEL_DIR/.config"
-
-        if [ "$ENABLE_LOCALMODCONFIG" -eq 1 ]; then
-            echo "Running localmodconfig for platform $PLATFORM..."
-            if [ -f "${PLATFORM_LSMOD[$PLATFORM]}" ]; then
-                yes "" | make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" localmodconfig LSMOD="${PLATFORM_LSMOD[$PLATFORM]}"
-            else
-                echo "Warning: LSMOD file not found: ${PLATFORM_LSMOD[$PLATFORM]}"
-                echo "Skipping localmodconfig..."
-            fi
-        fi
     else
         echo "Skipping config changes (--skip-config-changes)"
         # Still apply suffix increment if not disabled
@@ -523,23 +517,14 @@ fi
 # Normal build process continues below
 if [ "$SKIP_CONFIG_CHANGES" -eq 0 ]; then
     if [ ! -f "$KERNEL_DIR/.config" ]; then
-        echo ".config file not found, running ${PLATFORM_CONFIGS[$PLATFORM]} and localmodconfig if enabled"
+        echo "Creating .config with ${PLATFORM_CONFIGS[$PLATFORM]}..."
         make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" "${PLATFORM_CONFIGS[$PLATFORM]}"
-
-        # Apply config profiles
-        apply_config_profiles "$KERNEL_DIR/.config"
-
-        if [ "$ENABLE_LOCALMODCONFIG" -eq 1 ]; then
-            if [ -f "${PLATFORM_LSMOD[$PLATFORM]}" ]; then
-                make -C "$KERNEL_DIR" -j"$JOBS" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" localmodconfig LSMOD="${PLATFORM_LSMOD[$PLATFORM]}"
-            else
-                echo "Warning: LSMOD file not found: ${PLATFORM_LSMOD[$PLATFORM]}"
-                echo "Skipping localmodconfig..."
-            fi
-        fi
+    else
+        echo ".config exists, using existing configuration"
     fi
 
-    # Ensure config profiles are applied even if .config existed
+    # Apply config profiles once (includes base config + custom profiles + olddefconfig)
+    # This handles both new configs and updates to existing configs
     apply_config_profiles "$KERNEL_DIR/.config"
 else
     echo "Skipping config changes (--skip-config-changes)"

@@ -201,13 +201,13 @@ build-config-impl:
 		echo "Creating initial .config with $(DEFCONFIG)"; \
 		$(MAKE) -C "$(KERNEL_DIR)" -j$(JOBS) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) $(DEFCONFIG); \
 	fi
-	@$(MAKE) -s apply-config-profiles
 	@if [ "$(ENABLE_LOCALMODCONFIG)" = "1" ] && [ -f "$(LSMOD_FILE)" ]; then \
 		echo "Running localmodconfig for platform $(PLATFORM)..."; \
 		yes "" | $(MAKE) -C "$(KERNEL_DIR)" -j$(JOBS) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) localmodconfig LSMOD="$(LSMOD_FILE)"; \
 	elif [ "$(ENABLE_LOCALMODCONFIG)" = "1" ]; then \
 		echo "Warning: LSMOD file not found: $(LSMOD_FILE), skipping localmodconfig"; \
 	fi
+	@$(MAKE) -s apply-config-profiles
 
 apply-config-profiles:
 	@if [ -n "$(CONFIG_PROFILES)" ]; then \
