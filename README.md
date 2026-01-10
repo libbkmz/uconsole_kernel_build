@@ -1,23 +1,31 @@
 # uConsole Kernel Build System
 
-A simplified, maintainable kernel build system for ClockworkPi uConsole devices (CM4/CM5) with required DT overlays, screen and backlight modules.
+A simplified, maintainable kernel build system for ClockworkPi uConsole devices (CM4/CM5) designed for fast turnaround testing of kernel modules (CWU50 panel driver, OCP8178 backlight, etc.) with integrated device tree overlays and external drivers.
+
+**⚠️ Status**: This project is in very early phase and actively being developed.
 
 ## Project Goals
 
 ### Primary Objectives
-- Create a centralized repository for all uConsole-specific drivers
-- Enable mainline Linux kernel usage without patches or modifications  
-- Document known kernel/driver level issues
-- Lower the barrier to entry for custom kernel building
+- **Create a dedicated home for uConsole drivers** - Currently, uConsole-specific drivers (CWU50 panel, OCP8178 backlight, AXP20X power management) are scattered across different repositories with no proper version history or centralized maintenance
+- **Enable rapid development and testing** - Provide tools for fast turnaround testing of kernel modules and drivers without complex rebuild cycles
+- **Enable mainline Linux kernel usage** - Support unmodified Raspberry Pi mainline kernels without patches or permanent modifications
+- **Lower the barrier to entry** - Make custom kernel building and driver development accessible to developers without deep kernel expertise
+- **Maintain proper version history** - Document all changes to drivers with clear commit history and descriptions (unlike current random edits and sharing)
 
 ### Technical Approach
-- Use external modules and device tree overlays instead of kernel tree modifications
-- Maintain complete change history for all drivers
+- Use external kernel modules and device tree overlays instead of kernel tree modifications
+- Maintain complete change history for all drivers with proper git workflow
 - Support multiple Linux distributions from a single source
+- Optimize for developer experience with fast iteration cycles
 
 ### Long-term Vision
-- Make a simple Alpine Linux image that you just dd and it boots
-- Make simple .deb packages for uConsole in a dedicated apt repo. Maybe provide solutions for other distros too.
+- Make driver development and maintenance sustainable with proper tooling
+- Support multiple Raspberry Pi compute modules (CM3, CM4, CM5, etc.)
+- Support other platforms (DevTerm, etc.)
+- Provide pre-built distributions with integrated drivers and overlays
+- Create Alpine Linux image with one-command installation
+- Provide .deb packages for uConsole in a dedicated apt repository
 
 
 ## TODO 
@@ -91,6 +99,22 @@ make cm4
 make clean
 ```
 
+## Development Workflow: Fast Turnaround Testing
+
+The build system is optimized for rapid testing of kernel modules and drivers:
+
+1. **Modify driver code** in the relevant module directory
+2. **Rebuild**: `make cm5` (or `make cm4` for CM4)
+3. **Deploy**: Archives are ready in `target/cm5/` for quick rsync to your device
+4. **Test**: Boot and verify driver functionality
+5. **Iterate**: Changes are tracked with platform-aware version suffixes for easy comparison
+
+The build system handles:
+- **Incremental rebuilds** - Kernel modules are compiled incrementally
+- **Configuration management** - Automatic build counter increments to track iterations
+- **Multiple drivers** - CWU50 panel driver, OCP8178 backlight, AXP20X power management all in one place
+- **Version tracking** - Each build gets a unique version suffix (e.g., `cm5-bkmz-1`, `cm5-bkmz-2`)
+
 ## Configuration
 
 ### Platform Options
@@ -152,4 +176,6 @@ This repository includes drivers for:
 
 ---
 
-**Note**: This project is in early development. While functional, expect frequent updates and improvements. Always test builds before deploying to your main uConsole device!
+## Contributing
+
+As this project is in early development, contributions and feedback are welcome. Key areas for improvement are listed in the TODO section.
