@@ -1,8 +1,0 @@
-# Just regenerate config with localmodconfig
-./build_kernel.sh --regen-config --enable-localmodconfig
-
-# Regenerate config without localmodconfig
-./build_kernel.sh --regen-config --disable-localmodconfig
-
-# Normal build with custom options
-./build_kernel.sh --disable-localmodconfig --disable-fullbuild

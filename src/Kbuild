@@ -1,0 +1,17 @@
+ifeq ($(PLATFORM),cm4)
+obj-m += panel-cwu50.o
+obj-m += ocp8178_bl.o
+panel-cwu50-objs := cm4/display/panel-cwu50.o
+ocp8178_bl-objs := cm4/backlight/ocp8178_bl.o
+endif
+
+ifeq ($(PLATFORM),cm5)
+obj-m += panel-clockwork-cwu50.o
+obj-m += panel-cwu50-nova-cm5.o
+obj-m += panel-cwu50-rex-cm5.o
+obj-m += ocp8178_bl-nova-cm5.o
+panel-clockwork-cwu50-objs := cm5/display/panel-clockwork-cwu50.o
+panel-cwu50-nova-cm5-objs := cm5/display/panel-cwu50-nova-cm5.o
+panel-cwu50-rex-cm5-objs := cm5/display/panel-cwu50-rex-cm5.o
+ocp8178_bl-nova-cm5-objs := cm5/backlight/ocp8178_bl-nova-cm5.o
+endif

@@ -1,0 +1,4 @@
+# Append these lines to the uConsole boot config.txt after deploying the files.
+arm_64bit=1
+kernel=kernel8.img
+dtoverlay=clockworkpi-uconsole
