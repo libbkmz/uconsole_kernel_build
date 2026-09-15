@@ -1,40 +1,82 @@
-# v3
+# uConsole kernel packages
 
-Minimal CM4/CM5 uConsole kernel builder for Debian or Ubuntu on x86_64 and
-AArch64. It shallow-clones Raspberry Pi Linux when absent, reuses it on later
-builds, and builds the drivers, DTBs, overlays, and mandatory kernel
-configuration stored in this directory.
+Build CM4 kernel and matching headers packages for Raspberry Pi OS Trixie
+64-bit, on a Debian Trixie arm64 or amd64 build server. CM5 sources are retained
+but this package workflow currently targets CM4 only.
+
+## Build
 
 ```console
 make deps
-make cm5 # or: make cm4
+make cm4
 ```
 
-Set `KERNEL_BRANCH` at the top of `Makefile` or override it when building:
+Edit `configs/uconsole.conf` to change kernel options. Each build starts from
+Raspberry Pi's `bcm2711_defconfig` and applies that file. Direct edits to the
+generated `.config` are overwritten. Display/backlight drivers stay out of
+tree and are always included.
+
+`VERSION` defaults to a UTC timestamp. You can supply an increasing numeric
+version (digits and dots only):
 
 ```console
-make KERNEL_BRANCH=rpi-6.12.y cm5
+make cm4 VERSION=2026091601
 ```
 
-Optional kernel config profiles can be layered over `configs/base.conf`:
+Use a new, higher version for every published build, including config-only
+changes. Both packages have stable names, so upgrading replaces the previous
+package contents. The kernel release includes the version to distinguish
+matching modules and headers.
+
+Results in `dist/<version>/`:
+
+- `uconsole-kernel-cm4_<version>_arm64.deb`
+- `uconsole-kernel-headers-cm4_<version>_arm64.deb`
+- `kernel.config` and `kernel-commit`
+
+The headers package depends on the exact matching kernel package version.
+Packaging checks required drivers, DTBs, overlays, generated headers and the
+headers build link before creating the final packages.
+
+## Kernel source
+
+The first build clones Raspberry Pi Linux and selects `KERNEL_REF` (default
+`rpi-6.12.y`). Later builds reuse that checkout without fetching updates.
+To update it or select another branch, tag or commit:
 
 ```console
-make PROFILES="debug development" cm5
+make update KERNEL_REF=rpi-6.12.y
+make cm4 KERNEL_REF=rpi-6.12.y
 ```
 
-The result is in `dist/`. Each archive contains one timestamped directory with
-`boot/firmware/` and `lib/` inside it, so normal extraction cannot overwrite the
-running system. It includes the kernel, platform DTBs, Raspberry Pi overlays,
-uConsole overlay and drivers, module tree, kernel config, System.map, and
-`config.txt.additions`:
+To build an existing checkout at its current commit:
 
 ```console
-tar xzf dist/uconsole-cm5-*.tar.gz
+make cm4 KERNEL_DIR=/absolute/path/to/linux
 ```
 
-Inspect that directory, then deploy it with `rsync` when ready. Don't use
-`--strip-components` or extract the archive directly over `/`.
+This writes build files into that checkout. `make update` requires clean tracked
+source files. `make clean` removes this project's `build/` and `dist/`; it does
+not clean an external checkout.
 
-After deploying, review and append `boot/firmware/config.txt.additions` to the
-device's existing `/boot/firmware/config.txt`. The build never edits the
-device's boot configuration.
+## Install on the uConsole
+
+Copy the two packages from one release directory, then install both together:
+
+```console
+sudo apt install ./uconsole-kernel-cm4_<version>_arm64.deb ./uconsole-kernel-headers-cm4_<version>_arm64.deb
+```
+
+Packages use versioned `/boot/vmlinuz-<release>`, `/lib/modules/<release>/`,
+and `/lib/modules/<release>/dtb/` paths. Headers include the matching external
+module build files and `/lib/modules/<release>/build` link.
+
+**Boot activation and rollback are deferred.** The image retains upstream
+kernel package hooks, which invoke the installed system's kernel/initramfs
+hooks. Their Raspberry Pi boot-partition behavior has not been verified.
+The package does not edit `config.txt`; an example is installed in
+`/usr/share/doc/uconsole-kernel-cm4/config.txt.example`.
+A successful package install is not yet a verified bootable deployment.
+
+No apt repository is required to install these files. Repository publishing
+is outside this build workflow.
