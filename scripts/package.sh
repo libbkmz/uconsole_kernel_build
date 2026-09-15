@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'printf "package.sh:%s: failed: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 
 # Called by make package after the kernel and external modules are built.
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -11,7 +12,8 @@ export DEBFULLNAME="${DEBFULLNAME:-uConsole builder}"
 export DEBEMAIL="${DEBEMAIL:-uconsole@localhost}"
 
 # Use the upstream image/header builders, without libc headers or debug packages.
-make -C "$kernel" debian
+# "debian" is internal to scripts/Makefile.package, not a top-level target.
+make -C "$kernel" run-command KBUILD_RUN_COMMAND='$(srctree)/scripts/package/mkdebian'
 make -C "$kernel" -f debian/rules -j"$JOBS" binary-image binary-headers
 
 stage="$repo/build/cm4/packages"
@@ -72,7 +74,8 @@ done
 # Fail before publishing an incomplete pair. These checks run on the build server.
 test -s "$image/boot/vmlinuz-$release"
 test -s "$image/boot/config-$release"
-test -s "$modules/dtb/bcm2711-rpi-cm4.dtb"
+# Raspberry Pi kernels may install DTBs flat or grouped by vendor.
+test -s "$modules/dtb/bcm2711-rpi-cm4.dtb" || test -s "$modules/dtb/broadcom/bcm2711-rpi-cm4.dtb"
 test -s "$modules/dtb/overlays/clockworkpi-uconsole-overlay.dtbo"
 for module in panel-cwu50 ocp8178_bl; do
     test -n "$(find "$modules" -name "$module.ko*" -print -quit)"
